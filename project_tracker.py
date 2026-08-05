@@ -114,8 +114,7 @@ def render_row(project, move_icon=None, move_label=None, move_target_status=None
     widths = [4] + [1] * n_action_buttons
     cols = st.columns(widths)
 
-    display_name = f"~~{project['name']}~~" if strikethrough else project["name"]
-    cols[0].write(display_name)
+    cols[0].write(project["name"])
 
     idx = 1
     if move_label:
