@@ -1,7 +1,11 @@
 import streamlit as st
 from supabase import create_client, Client
 
-st.set_page_config(page_title="Project Tracker", layout="centered")
+st.set_page_config(
+    page_title="Project Tracker",
+    page_icon="https://raw.githubusercontent.com/sahil-karki007/project-tracker/main/app_icon.png",
+    layout="centered",
+)
 
 # ---------- Mobile-friendly CSS ----------
 st.markdown(
