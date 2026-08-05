@@ -1,48 +1,20 @@
 import streamlit as st
-import json
-import os
+from supabase import create_client, Client
 
 st.set_page_config(page_title="Project Tracker", layout="centered")
-
-# ---------- Persistence (JSON file on disk) ----------
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects_data.json")
-
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {"incoming": [], "ongoing": [], "complete": [], "next_id": 1}
-
-
-def save_data():
-    data = {
-        "incoming": st.session_state.incoming,
-        "ongoing": st.session_state.ongoing,
-        "complete": st.session_state.complete,
-        "next_id": st.session_state.next_id,
-    }
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
 
 # ---------- Mobile-friendly CSS ----------
 st.markdown(
     """
     <style>
-    /* Smaller, square-ish icon buttons (Start/Done/Edit/Delete) */
     div.stButton > button {
         padding: 0.4rem 0.4rem;
         font-size: 0.95rem;
     }
-    /* Tabs a bit bigger & easier to tap on phones */
     button[data-baseweb="tab"] {
         font-size: 1rem;
         padding: 0.5rem 0.7rem;
     }
-    /* Reduce side padding on small screens */
     @media (max-width: 768px) {
         .block-container {
             padding-left: 0.7rem;
@@ -56,44 +28,63 @@ st.markdown(
 
 st.title("📋 Project Tracker")
 
+# ---------- Supabase Connection ----------
+@st.cache_resource
+def get_client() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+
+supabase = get_client()
+
+
+def refresh_state():
+    """Pull the latest data from Supabase and split it into the 3 lists."""
+    response = supabase.table("projects").select("*").order("id").execute()
+    rows = response.data
+    st.session_state.incoming = [r for r in rows if r["status"] == "incoming"]
+    st.session_state.ongoing = [r for r in rows if r["status"] == "ongoing"]
+    st.session_state.complete = [r for r in rows if r["status"] == "complete"]
+
+
 # ---------- Session State Setup ----------
 if "data_loaded" not in st.session_state:
-    saved = load_data()
-    st.session_state.incoming = saved["incoming"]
-    st.session_state.ongoing = saved["ongoing"]
-    st.session_state.complete = saved["complete"]
-    st.session_state.next_id = saved["next_id"]
+    refresh_state()
     st.session_state.data_loaded = True
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
 
 
-# ---------- Helper Functions ----------
+# ---------- Helper Functions (all write to Supabase, then refresh) ----------
 def add_project(name):
     if name.strip():
-        st.session_state.incoming.append(
-            {"id": st.session_state.next_id, "name": name.strip()}
-        )
-        st.session_state.next_id += 1
-        save_data()
+        supabase.table("projects").insert({"name": name.strip(), "status": "incoming"}).execute()
+        refresh_state()
 
 
-def move_project(project, from_list, to_list):
-    from_list.remove(project)
-    to_list.append(project)
-    save_data()
+def move_project(project_id, new_status):
+    supabase.table("projects").update({"status": new_status}).eq("id", project_id).execute()
+    refresh_state()
 
 
-def delete_project(project, from_list):
-    from_list.remove(project)
-    if st.session_state.editing_id == project["id"]:
+def delete_project(project_id):
+    supabase.table("projects").delete().eq("id", project_id).execute()
+    if st.session_state.editing_id == project_id:
         st.session_state.editing_id = None
-    save_data()
+    refresh_state()
 
 
-def render_row(project, current_list, move_icon=None, move_label=None, move_target=None,
+def rename_project(project_id, new_name):
+    if new_name.strip():
+        supabase.table("projects").update({"name": new_name.strip()}).eq("id", project_id).execute()
+    st.session_state.editing_id = None
+    refresh_state()
+
+
+def render_row(project, move_icon=None, move_label=None, move_target_status=None,
                show_edit=True, strikethrough=False):
-    """Renders one project as a single compact row, matching the sketch layout."""
+    """Renders one project as a single compact row."""
     is_editing = st.session_state.editing_id == project["id"]
 
     if is_editing:
@@ -107,10 +98,7 @@ def render_row(project, current_list, move_icon=None, move_label=None, move_targ
             )
         with save_col:
             if st.button("💾", key=f"save_{project['id']}", use_container_width=True, help="Save"):
-                if new_name.strip():
-                    project["name"] = new_name.strip()
-                st.session_state.editing_id = None
-                save_data()
+                rename_project(project["id"], new_name)
                 st.rerun()
         with cancel_col:
             if st.button("✖️", key=f"cancel_{project['id']}", use_container_width=True, help="Cancel"):
@@ -118,7 +106,6 @@ def render_row(project, current_list, move_icon=None, move_label=None, move_targ
                 st.rerun()
         return
 
-    # Build column widths depending on which buttons are shown
     n_action_buttons = (1 if move_label else 0) + (1 if show_edit else 0) + 1  # +1 for delete
     widths = [4] + [1] * n_action_buttons
     cols = st.columns(widths)
@@ -130,7 +117,7 @@ def render_row(project, current_list, move_icon=None, move_label=None, move_targ
     if move_label:
         with cols[idx]:
             if st.button(move_icon, key=f"move_{project['id']}", use_container_width=True, help=move_label):
-                move_project(project, current_list, move_target)
+                move_project(project["id"], move_target_status)
                 st.rerun()
         idx += 1
 
@@ -143,7 +130,7 @@ def render_row(project, current_list, move_icon=None, move_label=None, move_targ
 
     with cols[idx]:
         if st.button("🗑️", key=f"delete_{project['id']}", use_container_width=True, help="Delete"):
-            delete_project(project, current_list)
+            delete_project(project["id"])
             st.rerun()
 
 
@@ -153,6 +140,7 @@ with st.form("add_project_form", clear_on_submit=True):
     submitted = st.form_submit_button("➕ Add to Incoming", use_container_width=True)
     if submitted:
         add_project(new_project_name)
+        st.rerun()
 
 st.divider()
 
@@ -168,29 +156,27 @@ tab_incoming, tab_ongoing, tab_complete = st.tabs(
 with tab_incoming:
     if not st.session_state.incoming:
         st.caption("No incoming projects yet. Add one above.")
-    for project in st.session_state.incoming[:]:
+    for project in st.session_state.incoming:
         render_row(
             project,
-            st.session_state.incoming,
             move_icon="▶️",
             move_label="Start",
-            move_target=st.session_state.ongoing,
+            move_target_status="ongoing",
         )
 
 with tab_ongoing:
     if not st.session_state.ongoing:
         st.caption("No ongoing projects yet.")
-    for project in st.session_state.ongoing[:]:
+    for project in st.session_state.ongoing:
         render_row(
             project,
-            st.session_state.ongoing,
             move_icon="✅",
             move_label="Done",
-            move_target=st.session_state.complete,
+            move_target_status="complete",
         )
 
 with tab_complete:
     if not st.session_state.complete:
         st.caption("No completed projects yet.")
-    for project in st.session_state.complete[:]:
-        render_row(project, st.session_state.complete, show_edit=False, strikethrough=True)
+    for project in st.session_state.complete:
+        render_row(project, show_edit=False, strikethrough=True)
